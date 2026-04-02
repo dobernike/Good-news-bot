@@ -23,12 +23,12 @@ MAX_ARTICLES = int(os.environ.get("MAX_ARTICLES", "3"))
 
 # Queries tried in order; first one with enough results wins.
 QUERIES = [
-    "good news inspiring",
-    "breakthrough discovery hope",
-    "rescue volunteer community success",
+    "технологии инновации",
+    "искусственный интеллект открытие",
+    "наука технологии прорыв",
 ]
 
-HEADER = "\U0001f31f <b>Good News of the Day</b> \U0001f31f\n"
+HEADER = "\U0001f4f1 <b>Технологии дня</b> \U0001f4f1\n"
 
 
 def fetch_good_news() -> list[dict]:
@@ -43,7 +43,7 @@ def fetch_good_news() -> list[dict]:
         try:
             response = api.get_everything(
                 q=query,
-                language="en",
+                language="ru",
                 sort_by="publishedAt",
                 page_size=10,
             )

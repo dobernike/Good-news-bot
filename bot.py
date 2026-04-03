@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 NEWS_API_KEY = os.environ["NEWS_API_KEY"]
-POST_TIME = os.environ.get("POST_TIME", "09:00")  # HH:MM UTC
-MAX_ARTICLES = int(os.environ.get("MAX_ARTICLES", "3"))
+# Comma-separated post times in HH:MM UTC, e.g. "09:00,18:00"
+POST_TIMES = [t.strip() for t in os.environ.get("POST_TIMES", "09:00,18:00").split(",")]
+MAX_ARTICLES = int(os.environ.get("MAX_ARTICLES", "5"))
 
 # Queries tried in order; first one with enough results wins.
 QUERIES = [
@@ -123,22 +124,22 @@ async def post_good_news(bot: Bot) -> None:
 
 
 async def main() -> None:
-    hour, minute = (int(x) for x in POST_TIME.split(":"))
-
     bot = Bot(token=TELEGRAM_TOKEN)
 
     # Verify credentials on startup
     me = await bot.get_me()
-    logger.info("Logged in as @%s — will post daily at %s UTC.", me.username, POST_TIME)
+    logger.info("Logged in as @%s — will post at %s UTC.", me.username, ", ".join(POST_TIMES))
 
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(
-        post_good_news,
-        trigger="cron",
-        hour=hour,
-        minute=minute,
-        args=[bot],
-    )
+    for post_time in POST_TIMES:
+        hour, minute = (int(x) for x in post_time.split(":"))
+        scheduler.add_job(
+            post_good_news,
+            trigger="cron",
+            hour=hour,
+            minute=minute,
+            args=[bot],
+        )
     scheduler.start()
 
     try:

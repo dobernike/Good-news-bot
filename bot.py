@@ -1,8 +1,9 @@
 import asyncio
+import json
 import logging
 import os
 import textwrap
-from datetime import datetime, timezone
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from newsapi import NewsApiClient
@@ -19,72 +20,69 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 NEWS_API_KEY = os.environ["NEWS_API_KEY"]
-# Comma-separated post times in HH:MM UTC, e.g. "09:00,18:00"
 POST_TIMES = [t.strip() for t in os.environ.get("POST_TIMES", "09:00,18:00").split(",")]
 
-# Each category: emoji, label, and queries tried in order until an article is found.
-CATEGORIES = [
-    {
-        "emoji": "\U0001f4bb",
-        "label": "Разработка",
-        "queries": [
-            "программирование инструменты разработчик",
-            "фреймворк библиотека релиз",
-            "open source разработка",
-        ],
-    },
-    {
-        "emoji": "\U0001f4b9",
-        "label": "Инвестиции",
-        "queries": [
-            "инвестиции акции рынок возможности",
-            "стартап финансирование раунд",
-            "фондовый рынок тренд",
-        ],
-    },
-    {
-        "emoji": "\U0001f4b0",
-        "label": "Крипто",
-        "queries": [
-            "криптовалюта биткоин ethereum",
-            "блокчейн DeFi Web3",
-            "крипто новости токен",
-        ],
-    },
-    {
-        "emoji": "\u2708\ufe0f",
-        "label": "Путешествия",
-        "queries": [
-            "путешествия туризм направления",
-            "авиабилеты отели скидки",
-            "туристические места открытие",
-        ],
-    },
-    {
-        "emoji": "\U0001f3ae",
-        "label": "Игры",
-        "queries": [
-            "видеоигры релиз анонс",
-            "игровая индустрия новинка",
-            "геймплей обновление игра",
-        ],
-    },
+ARTICLES_PER_POST = 3
+# How many past URLs to remember (avoids repeats across many posts)
+HISTORY_SIZE = 200
+HISTORY_FILE = Path(os.environ.get("HISTORY_FILE", "posted_urls.json"))
+
+# Tried in order; combined they cover plenty of bizarre/funny material.
+QUERIES = [
+    "funny weird bizarre news",
+    "strange odd unusual news",
+    "absurd ridiculous unexpected",
+    "humor amusing surprising news",
+    "quirky offbeat odd",
 ]
 
 
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# ---------------------------------------------------------------------------
+# URL history — persisted to a local JSON file so restarts don't reset it
+# ---------------------------------------------------------------------------
+
+def load_history() -> list[str]:
+    if HISTORY_FILE.exists():
+        try:
+            return json.loads(HISTORY_FILE.read_text())
+        except Exception:
+            pass
+    return []
 
 
-def fetch_article_for_category(api: NewsApiClient, queries: list[str], seen_urls: set[str]) -> dict | None:
-    """Try each query in order and return the first fresh article found."""
-    for query in queries:
+def save_history(history: list[str]) -> None:
+    try:
+        HISTORY_FILE.write_text(json.dumps(history))
+    except Exception as exc:
+        logger.warning("Could not save history: %s", exc)
+
+
+def add_to_history(urls: list[str]) -> None:
+    history = load_history()
+    history.extend(urls)
+    # Keep only the most recent entries
+    save_history(history[-HISTORY_SIZE:])
+
+
+# ---------------------------------------------------------------------------
+# Fetching
+# ---------------------------------------------------------------------------
+
+def fetch_funny_news() -> list[dict]:
+    """Return ARTICLES_PER_POST funny articles not seen before."""
+    api = NewsApiClient(api_key=NEWS_API_KEY)
+    seen_urls = set(load_history())
+    articles: list[dict] = []
+
+    for query in QUERIES:
+        if len(articles) >= ARTICLES_PER_POST:
+            break
         try:
             response = api.get_everything(
                 q=query,
-                language="ru",
+                language="en",
                 sort_by="publishedAt",
-                page_size=10,
+                page_size=20,
             )
         except Exception as exc:
             logger.warning("NewsAPI query %r failed: %s", query, exc)
@@ -96,43 +94,34 @@ def fetch_article_for_category(api: NewsApiClient, queries: list[str], seen_urls
             if not title or title == "[Removed]" or url in seen_urls:
                 continue
             seen_urls.add(url)
-            return article
+            articles.append(article)
+            if len(articles) >= ARTICLES_PER_POST:
+                break
 
-    return None
-
-
-def fetch_digest() -> list[tuple[dict, dict]]:
-    """Return a list of (category, article) pairs — one per category."""
-    api = NewsApiClient(api_key=NEWS_API_KEY)
-    seen_urls: set[str] = set()
-    results = []
-
-    for category in CATEGORIES:
-        article = fetch_article_for_category(api, category["queries"], seen_urls)
-        if article:
-            results.append((category, article))
-        else:
-            logger.warning("No article found for category %r", category["label"])
-
-    return results
+    return articles
 
 
-def build_message(digest: list[tuple[dict, dict]]) -> str:
-    now = datetime.now(timezone.utc).strftime("%d.%m.%Y")
-    parts = [f"\U0001f4f0 <b>Дайджест {now}</b>\n"]
+# ---------------------------------------------------------------------------
+# Formatting
+# ---------------------------------------------------------------------------
 
-    for category, article in digest:
-        emoji = category["emoji"]
-        label = category["label"]
-        title = _escape((article.get("title") or "Без заголовка").strip())
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def build_message(articles: list[dict]) -> str:
+    parts = ["\U0001f923 <b>Смешные новости дня</b> \U0001f923\n"]
+
+    for i, article in enumerate(articles, 1):
+        title = _escape((article.get("title") or "No title").strip())
         description = _escape((article.get("description") or "").strip())
         url = article.get("url", "")
-        source = _escape(article.get("source", {}).get("name") or "Неизвестно")
+        source = _escape(article.get("source", {}).get("name") or "Unknown")
 
-        if len(description) > 250:
-            description = textwrap.shorten(description, width=250, placeholder="…")
+        if len(description) > 280:
+            description = textwrap.shorten(description, width=280, placeholder="…")
 
-        block = f"{emoji} <b>{label}</b>\n<b>{title}</b>"
+        block = f"<b>{i}. {title}</b>"
         if description:
             block += f"\n{description}"
         block += f"\n<i>— {source}</i>"
@@ -144,16 +133,19 @@ def build_message(digest: list[tuple[dict, dict]]) -> str:
     return "\n\n".join(parts)
 
 
-async def post_digest(bot: Bot) -> None:
-    logger.info("Building digest…")
-    digest = fetch_digest()
+# ---------------------------------------------------------------------------
+# Posting
+# ---------------------------------------------------------------------------
 
-    if not digest:
-        logger.warning("No articles retrieved — skipping post.")
+async def post_funny_news(bot: Bot) -> None:
+    logger.info("Fetching funny news…")
+    articles = fetch_funny_news()
+
+    if not articles:
+        logger.warning("No new articles found — skipping post.")
         return
 
-    message = build_message(digest)
-
+    message = build_message(articles)
     if len(message) > 4096:
         message = message[:4090] + "\n…"
 
@@ -164,27 +156,25 @@ async def post_digest(bot: Bot) -> None:
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
-        logger.info("Posted digest (%d categories) to %s.", len(digest), TELEGRAM_CHAT_ID)
+        add_to_history([a.get("url", "") for a in articles])
+        logger.info("Posted %d article(s); history size: %d.", len(articles), len(load_history()))
     except TelegramError as exc:
         logger.error("Failed to send message: %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 async def main() -> None:
     bot = Bot(token=TELEGRAM_TOKEN)
-
     me = await bot.get_me()
-    logger.info("Logged in as @%s — will post at %s UTC.", me.username, ", ".join(POST_TIMES))
+    logger.info("Logged in as @%s — posting at %s UTC.", me.username, ", ".join(POST_TIMES))
 
     scheduler = AsyncIOScheduler(timezone="UTC")
     for post_time in POST_TIMES:
         hour, minute = (int(x) for x in post_time.split(":"))
-        scheduler.add_job(
-            post_digest,
-            trigger="cron",
-            hour=hour,
-            minute=minute,
-            args=[bot],
-        )
+        scheduler.add_job(post_funny_news, trigger="cron", hour=hour, minute=minute, args=[bot])
     scheduler.start()
 
     try:

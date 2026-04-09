@@ -29,11 +29,11 @@ HISTORY_FILE = Path(os.environ.get("HISTORY_FILE", "posted_urls.json"))
 
 # Tried in order; combined they cover plenty of bizarre/funny material.
 QUERIES = [
-    "funny weird bizarre news",
-    "strange odd unusual news",
-    "absurd ridiculous unexpected",
-    "humor amusing surprising news",
-    "quirky offbeat odd",
+    "курьёз нелепый смешной",
+    "странный случай необычное происшествие",
+    "смешные новости забавное",
+    "нелепость странность прикол",
+    "необычный курьёзный забавный",
 ]
 
 
@@ -80,7 +80,7 @@ def fetch_funny_news() -> list[dict]:
         try:
             response = api.get_everything(
                 q=query,
-                language="en",
+                language="ru",
                 sort_by="publishedAt",
                 page_size=20,
             )
